@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MusiCanvas — Each Note. A Pattern. Every Song. A Masterpiece.</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- LEFT PANEL: concept + note legend -->
+  <aside class="panel panel-left">
+    <header class="brand">
+      <div class="brand-mark">
+        <span class="dot d1"></span><span class="dot d2"></span><span class="dot d3"></span>
+        <span class="dot d4"></span><span class="dot d5"></span><span class="dot d6"></span>
+      </div>
+      <h1>MUSI<span class="brand-sep">•</span>CANVAS</h1>
+    </header>
+    <p class="tagline">Each Note. A Pattern.<br>Every Song. A Masterpiece.</p>
+    <p class="blurb">Every musical note is mapped to a fixed geometric pattern. As you sing or play, patterns are drawn live on the canvas — one performance, one artwork. Deterministic and reproducible.</p>
+
+    <h2 class="section-title">Note → Pattern</h2>
+    <div class="legend" id="legend"></div>
+
+    <div class="rules">
+      <h2 class="section-title">Musical Mapping</h2>
+      <ul>
+        <li><b>Octave</b> → pattern size</li>
+        <li><b>Loudness</b> → stroke weight &amp; opacity</li>
+        <li><b>Duration</b> → detail / complexity</li>
+        <li><b>Timing</b> → position &amp; rotation</li>
+      </ul>
+    </div>
+
+    <div class="mic-hint">
+      <div class="mic-icon">♪</div>
+      <div>Sing or play music.<br><span class="dim">Watch the art evolve in real time.</span></div>
+    </div>
+  </aside>
+
+  <!-- CENTER: canvas + now playing -->
+  <main class="stage">
+    <div class="stage-header">
+      <div class="live-pill" id="livePill"><span class="live-dot"></span><span id="liveLabel">IDLE</span></div>
+      <div class="stage-title">Live Drawing from Music</div>
+      <div class="timer" id="timer">00:00</div>
+    </div>
+    <div class="canvas-wrap" id="canvasWrap">
+      <canvas id="artCanvas"></canvas>
+      <div class="canvas-empty" id="canvasEmpty">
+        <div class="empty-glyph">◇</div>
+        <p>Press <b>Start Mic</b> or <b>Demo Melody</b><br>to begin drawing</p>
+      </div>
+    </div>
+    <div class="now-playing">
+      <div class="np-block np-history">
+        <span class="np-label">Now Playing</span>
+        <div class="note-history" id="noteHistory"></div>
+      </div>
+      <div class="np-block">
+        <span class="np-label">Note</span>
+        <span class="np-value" id="curNote">—</span>
+      </div>
+      <div class="np-block">
+        <span class="np-label">Pitch</span>
+        <span class="np-value np-small" id="curFreq">— Hz</span>
+      </div>
+      <div class="np-block">
+        <span class="np-label">Level</span>
+        <div class="meter"><div class="meter-fill" id="levelMeter"></div></div>
+      </div>
+    </div>
+  </main>
+
+  <!-- RIGHT PANEL: input + controls -->
+  <aside class="panel panel-right">
+    <h2 class="section-title">1. Input</h2>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnMic">● Start Mic</button>
+      <button class="btn" id="btnDemo">▶ Demo Melody</button>
+    </div>
+    <label class="file-btn btn" for="fileInput">♫ Play Audio File…</label>
+    <input type="file" id="fileInput" accept="audio/*" hidden>
+
+    <h2 class="section-title">2. Detected</h2>
+    <div class="detect-card">
+      <div class="detect-note" id="detectNote">—</div>
+      <canvas id="patternPreview" width="88" height="88"></canvas>
+    </div>
+
+    <h2 class="section-title">3. Controls</h2>
+    <div class="control">
+      <label>Color Mode</label>
+      <select id="colorMode">
+        <option value="rainbow">Rainbow (chromatic)</option>
+        <option value="harmonic">Harmonic Gradient</option>
+        <option value="moss">Stone &amp; Moss</option>
+        <option value="mono">Monochrome</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Symmetry</label>
+      <select id="symmetry">
+        <option value="1">None</option>
+        <option value="2">Mirror ×2</option>
+        <option value="4" selected>Radial ×4</option>
+        <option value="6">Radial ×6</option>
+        <option value="8">Radial ×8</option>
+      </select>
+    </div>
+    <div class="control">
+      <label>Sensitivity <span class="ctl-val" id="sensVal">50%</span></label>
+      <input type="range" id="sensitivity" min="0" max="100" value="50">
+    </div>
+    <div class="control">
+      <label>Trail Fade <span class="ctl-val" id="trailVal">0%</span></label>
+      <input type="range" id="trail" min="0" max="100" value="0">
+    </div>
+    <div class="control">
+      <label>Detail Level <span class="ctl-val" id="detailVal">75%</span></label>
+      <input type="range" id="detail" min="10" max="100" value="75">
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="btnPause">⏸ Pause</button>
+      <button class="btn" id="btnClear">⟳ Clear</button>
+    </div>
+    <button class="btn btn-save" id="btnSave">⬇ Save Artwork (PNG)</button>
+
+    <div class="how-it-works">
+      <h2 class="section-title">How it works</h2>
+      <div class="flow">
+        <span>Sound</span><i>→</i><span>Note</span><i>→</i><span>Pattern</span><i>→</i><span>Canvas</span>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script src="patterns.js"></script>
+<script src="pitch.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
