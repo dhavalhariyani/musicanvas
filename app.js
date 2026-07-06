@@ -51,7 +51,8 @@
     mode: "idle",            // idle | mic | demo | file
     paused: false,
     startTime: 0,
-    stampCount: 0,           // deterministic placement index
+    stampCount: 0,           // total stamps this performance
+    noteCounts: {},          // per note+octave repeat counter, bounds density
     current: null,           // active note segment {note, octave, rot, startedAt, level, lastGrow}
     history: [],
     demoTimer: null, demoOsc: null, demoGain: null,
@@ -187,7 +188,10 @@
     const level = Math.min(1, seg.level * 6);
     const color = noteColor(seg.note, rFrac);
     const copies = Math.max(1, Math.round(parseInt(els.symmetry.value, 10) / 2));
-    const atten = 1 / (1 + (seg.restamps || 0)) / Math.sqrt(copies);
+    // Later variants of an already-drawn note fade progressively, and echo
+    // stamps (variants exhausted) skip the geometry entirely below.
+    const atten = 1 / (1 + (seg.restamps || 0)) / Math.sqrt(copies)
+      / (1 + (seg.variant || 0) * 0.25);
 
     a.save();
     a.globalCompositeOperation = "lighter";
@@ -200,8 +204,10 @@
     for (let s = 0; s < copies; s++) {
       // Layers have eighth-turn symmetry, so copies fan across one eighth
       const rot = seg.rot + (s / copies) * (TAU / 8);
-      a.globalAlpha = (0.32 + level * 0.35) * atten;
-      drawPattern(a, seg.note, cx, cy, radius, rot, detail);
+      if (!seg.echo) {
+        a.globalAlpha = (0.32 + level * 0.35) * atten;
+        drawPattern(a, seg.note, cx, cy, radius, rot, detail);
+      }
 
       // Asterisk nodes with a bright dot at the layer's eight fold points
       a.globalAlpha = 0.75 * atten;
@@ -281,12 +287,22 @@
       }
     }
     if (!state.current && heard) {
-      const idx = state.stampCount++;
+      state.stampCount++;
+      // Repeats of the same note+octave cycle through a small family of
+      // layer variants (rotation × radius). Beyond MAX_VARIANTS the layer
+      // set is complete — further repeats only shimmer the nodes, so the
+      // artwork converges instead of growing denser forever.
       const R_SCALES = [1.3, 0.75, 1.05, 0.5, 1.2, 0.62, 0.9];
+      const MAX_VARIANTS = 6;
+      const key = info.note + ":" + info.octave;
+      const n = state.noteCounts[key] || 0;
+      state.noteCounts[key] = n + 1;
       state.current = {
         note: info.note, octave: info.octave,
-        rot: (idx % 4) * (TAU / 16),      // deterministic per-stamp rotation
-        rScale: R_SCALES[idx % 7],        // deterministic radius spread
+        variant: Math.min(n, MAX_VARIANTS),
+        echo: n >= MAX_VARIANTS,
+        rot: (n % 4) * (TAU / 16),        // deterministic per-repeat rotation
+        rScale: R_SCALES[n % 7],          // deterministic radius spread
         startedAt: now, lastGrow: now, level: res.rms,
       };
     }
@@ -476,6 +492,7 @@
   els.btnClear.addEventListener("click", () => {
     art.getContext("2d").clearRect(0, 0, art.width, art.height);
     state.stampCount = 0;
+    state.noteCounts = {};
     state.history = [];
     els.noteHistory.innerHTML = "";
     els.canvasEmpty.classList.remove("hidden");
