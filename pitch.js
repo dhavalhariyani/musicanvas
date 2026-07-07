@@ -60,5 +60,32 @@
     return { midi, note, octave, name: MusiPatterns.NOTE_NAMES[note] + octave };
   }
 
-  window.MusiPitch = { detectPitch, freqToNote };
+  /**
+   * Chromagram for polyphonic (chord) detection: folds FFT magnitudes into
+   * the 12 pitch classes. Also reports spectral flatness, which separates
+   * tonal content (low) from percussion/noise (high).
+   * @param freqData Float32Array of dB values from AnalyserNode
+   * @returns { chroma[12], strongest[12] (peak freq per class), flatness }
+   */
+  function chromagram(freqData, sampleRate, fftSize) {
+    const chroma = new Float32Array(12);
+    const strongest = new Array(12).fill(null);
+    const binHz = sampleRate / fftSize;
+    const lo = Math.max(1, Math.ceil(60 / binHz));
+    const hi = Math.min(freqData.length - 1, Math.floor(2200 / binHz));
+    let sum = 0, logSum = 0, count = 0;
+    for (let i = lo; i <= hi; i++) {
+      const mag = Math.pow(10, freqData[i] / 20);
+      const f = i * binHz;
+      const midi = 69 + 12 * Math.log2(f / 440);
+      const pc = ((Math.round(midi) % 12) + 12) % 12;
+      chroma[pc] += mag;
+      if (!strongest[pc] || mag > strongest[pc].mag) strongest[pc] = { mag, freq: f };
+      sum += mag; logSum += Math.log(mag + 1e-12); count++;
+    }
+    const flatness = Math.exp(logSum / count) / (sum / count + 1e-12);
+    return { chroma, strongest, flatness };
+  }
+
+  window.MusiPitch = { detectPitch, freqToNote, chromagram };
 })();

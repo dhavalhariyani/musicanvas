@@ -110,6 +110,24 @@ body {
 .stage-title { font-size: 0.95rem; font-weight: 600; }
 .timer { font-variant-numeric: tabular-nums; color: var(--dim); font-size: 0.9rem; }
 
+.stage-actions { display: flex; align-items: center; gap: 8px; }
+.icon-btn {
+  background: #181828;
+  color: var(--dim);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.icon-btn:hover { color: var(--ink); border-color: #2e2e4a; }
+.icon-btn.on { color: var(--accent); border-color: var(--accent); }
+
+.canvas-wrap:fullscreen { border: none; border-radius: 0; }
+.detection-ctl { margin-top: 10px; }
+.export-row { margin-top: 8px; margin-bottom: 8px; }
+
 .live-pill {
   display: flex; align-items: center; gap: 7px;
   font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em;

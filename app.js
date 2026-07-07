@@ -20,6 +20,10 @@
     detectNote: $("detectNote"), patternPreview: $("patternPreview"),
     btnMic: $("btnMic"), btnDemo: $("btnDemo"), fileInput: $("fileInput"),
     btnPause: $("btnPause"), btnClear: $("btnClear"), btnSave: $("btnSave"),
+    detection: $("detection"),
+    btnReplay: $("btnReplay"), btnShare: $("btnShare"),
+    btnSvg: $("btnSvg"), btnHiRes: $("btnHiRes"), btnVideo: $("btnVideo"),
+    btnFx: $("btnFx"), btnFull: $("btnFull"),
     colorMode: $("colorMode"), symmetry: $("symmetry"),
     sensitivity: $("sensitivity"), trail: $("trail"), detail: $("detail"),
     sensVal: $("sensVal"), trailVal: $("trailVal"), detailVal: $("detailVal"),
@@ -53,23 +57,36 @@
     startTime: 0,
     stampCount: 0,           // total stamps this performance
     noteCounts: {},          // per note+octave repeat counter, bounds density
-    current: null,           // active note segment {note, octave, rot, startedAt, level, lastGrow}
+    current: null,           // active note segment (melody mode)
+    chordSegs: new Map(),    // active segments per pitch class (music mode)
+    pcOn: new Array(12).fill(0), pcOff: new Array(12).fill(0),
+    perf: [],                // recorded performance: {t, n, o, d, l} events
+    perfOffset: 0,           // time offset when resuming after a stop
+    smoothLevel: 0,          // smoothed audio level for motion FX
+    fxOn: true,              // motion FX (breathing / rotation / bloom)
     history: [],
     demoTimer: null, demoOsc: null, demoGain: null,
   };
   const timeBuf = new Float32Array(2048);
+  let freqBuf = null; // allocated once the analyser exists
+
+  // Density bounds: repeats of a note+octave cycle through a small variant
+  // family, then become node-only echoes (see stampNote).
+  const R_SCALES = [1.3, 0.75, 1.05, 0.5, 1.2, 0.62, 0.9];
+  const MAX_VARIANTS = 6;
 
   // Radii of the faint construction rings drawn beneath the artwork.
   // (Declared before resizeCanvas() runs below.)
   const SCAFFOLD_RINGS = [0.18, 0.34, 0.5, 0.66, 0.82];
 
   // ---------- Canvas sizing ----------
-  let art = null;      // offscreen canvas holding the accumulated artwork
-  let scaffold = null; // faint construction geometry rendered beneath the art
-  function buildScaffold(w, h) {
-    scaffold = document.createElement("canvas");
-    scaffold.width = w; scaffold.height = h;
-    const s = scaffold.getContext("2d");
+  let art = null;        // offscreen canvas holding the accumulated artwork
+  let scaffold = null;   // faint construction geometry rendered beneath the art
+  let bloomSmall = null; // low-res copy of `art`; upscaling it back is the bloom
+  function buildScaffoldCanvas(w, h) {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const s = c.getContext("2d");
     const cx = w / 2, cy = h / 2;
     const maxR = Math.min(w, h) * 0.46;
     s.strokeStyle = "rgba(130, 140, 210, 0.07)";
@@ -98,6 +115,7 @@
       }
       s.stroke();
     }
+    return c;
   }
 
   function resizeCanvas() {
@@ -116,7 +134,10 @@
       const dw = old.width * k, dh = old.height * k;
       art.getContext("2d").drawImage(old, (w - dw) / 2, (h - dh) / 2, dw, dh);
     }
-    buildScaffold(w, h);
+    scaffold = buildScaffoldCanvas(w, h);
+    bloomSmall = document.createElement("canvas");
+    bloomSmall.width = Math.max(48, Math.round(w / 8));
+    bloomSmall.height = Math.max(48, Math.round(h / 8));
   }
   window.addEventListener("resize", resizeCanvas);
   resizeCanvas();
@@ -163,12 +184,32 @@
   // Every note is a concentric LAYER centered on the canvas: octave sets its
   // radius, the stamp index sets its rotation, and the Symmetry control adds
   // slightly-rotated copies so layers interweave into one dense figure.
-  function stampNote(seg, durationSec) {
-    const a = art.getContext("2d");
-    const w = art.width, h = art.height;
-    const dpr = window.devicePixelRatio || 1;
+  // `target` lets the same drawing code render to the live canvas (default),
+  // an offscreen high-res canvas, or an SVGContext. Each target carries its
+  // own variant counters so exports replay deterministically.
+  function stampNote(seg, durationSec, target) {
+    const live = !target;
+    const t = target || {
+      ctx: art.getContext("2d"), w: art.width, h: art.height,
+      dpr: window.devicePixelRatio || 1, counters: state.noteCounts,
+    };
+    const a = t.ctx;
+    const w = t.w, h = t.h;
+    const dpr = t.dpr;
     const cx = w / 2, cy = h / 2;
     const maxR = Math.min(w, h) * 0.47;
+
+    // Variant bookkeeping happens at first stamp (not at segment creation) so
+    // recorded replays reproduce the exact same variant order as the live run.
+    if (seg.variant == null) {
+      const key = seg.note + ":" + seg.octave;
+      const n = t.counters[key] || 0;
+      t.counters[key] = n + 1;
+      seg.variant = Math.min(n, MAX_VARIANTS);
+      seg.echo = n >= MAX_VARIANTS;
+      seg.rot = (n % 4) * (TAU / 16);
+      seg.rScale = R_SCALES[n % 7];
+    }
 
     // Octave → layer radius (low notes inside, high notes outside), spread by
     // a deterministic per-stamp scale so single-octave melodies still fill
@@ -193,10 +234,15 @@
     const atten = 1 / (1 + (seg.restamps || 0)) / Math.sqrt(copies)
       / (1 + (seg.variant || 0) * 0.25);
 
+    // Per-shape shadowBlur is fine for incremental live drawing (a handful of
+    // stamps per tick), but is O(blur²) per call and would take minutes over
+    // a whole performance at 4K. Bulk render targets (hi-res export) disable
+    // it here and get one cheap full-canvas bloom pass afterward instead.
+    const glow = t.glow !== false;
+
     a.save();
     a.globalCompositeOperation = "lighter";
-    a.shadowColor = color;
-    a.shadowBlur = 6 * dpr;
+    if (glow) { a.shadowColor = color; a.shadowBlur = 6 * dpr; }
     a.strokeStyle = color;
     a.fillStyle = color;
     a.lineWidth = (0.4 + level * 0.5) * dpr;
@@ -211,7 +257,7 @@
 
       // Asterisk nodes with a bright dot at the layer's eight fold points
       a.globalAlpha = 0.75 * atten;
-      a.shadowBlur = 3 * dpr;
+      if (glow) a.shadowBlur = 3 * dpr;
       const arm = 4 * dpr;
       for (let k = 0; k < 8; k++) {
         const va = rot + (k / 8) * TAU;
@@ -227,12 +273,14 @@
           a.stroke();
         }
       }
-      a.shadowBlur = 6 * dpr;
+      if (glow) a.shadowBlur = 6 * dpr;
     }
     a.restore();
 
-    pushHistory(NOTE_NAMES[seg.note] + seg.octave, color);
-    els.canvasEmpty.classList.add("hidden");
+    if (live) {
+      pushHistory(NOTE_NAMES[seg.note] + seg.octave, color);
+      els.canvasEmpty.classList.add("hidden");
+    }
   }
 
   function pushHistory(label, color) {
@@ -247,8 +295,22 @@
   // A segment begins when a confident stable pitch appears, and ends when the
   // pitch changes note or the signal drops. Its duration drives complexity.
   const MIN_SEG_MS = 90;
+
+  // Stamp a finished segment and record it for replay / share / export
+  function closeSegment(seg, now) {
+    const dur = now - seg.startedAt;
+    if (dur < MIN_SEG_MS) return;
+    stampNote(seg, dur / 1000);
+    state.perf.push({
+      t: Math.round(seg.startedAt - state.startTime + state.perfOffset),
+      n: seg.note, o: seg.octave, d: Math.round(dur),
+      l: Math.round(seg.level * 1000) / 1000,
+    });
+  }
+
   function processPitch(now) {
-    if (!state.analyser || state.paused) return;
+    if (!state.analyser || state.paused || state.mode === "replay") return;
+    if (els.detection.value === "music") return processChords(now);
     state.analyser.getFloatTimeDomainData(timeBuf);
     const sens = els.sensitivity.value / 100;
     const res = detectPitch(timeBuf, state.audioCtx.sampleRate);
@@ -256,6 +318,7 @@
     const minRms = 0.02 - sens * 0.017;
 
     els.levelMeter.style.width = Math.min(100, res.rms * 900) + "%";
+    state.smoothLevel += (Math.min(1, res.rms * 6) - state.smoothLevel) * 0.25;
 
     const heard = res.freq > 0 && res.clarity >= minClarity && res.rms >= minRms;
     let info = null;
@@ -281,30 +344,90 @@
           stampNote(cur, (now - cur.startedAt) / 1000);
         }
       } else {
-        const dur = now - cur.startedAt;
-        if (dur >= MIN_SEG_MS) stampNote(cur, dur / 1000);
+        closeSegment(cur, now);
         state.current = null;
       }
     }
     if (!state.current && heard) {
       state.stampCount++;
-      // Repeats of the same note+octave cycle through a small family of
-      // layer variants (rotation × radius). Beyond MAX_VARIANTS the layer
-      // set is complete — further repeats only shimmer the nodes, so the
-      // artwork converges instead of growing denser forever.
-      const R_SCALES = [1.3, 0.75, 1.05, 0.5, 1.2, 0.62, 0.9];
-      const MAX_VARIANTS = 6;
-      const key = info.note + ":" + info.octave;
-      const n = state.noteCounts[key] || 0;
-      state.noteCounts[key] = n + 1;
       state.current = {
         note: info.note, octave: info.octave,
-        variant: Math.min(n, MAX_VARIANTS),
-        echo: n >= MAX_VARIANTS,
-        rot: (n % 4) * (TAU / 16),        // deterministic per-repeat rotation
-        rScale: R_SCALES[n % 7],          // deterministic radius spread
         startedAt: now, lastGrow: now, level: res.rms,
       };
+    }
+  }
+
+  // Music mode: chromagram-based polyphonic detection. Up to three stable
+  // pitch classes are tracked as concurrent segments, so chords stamp
+  // composite layers. High spectral flatness (percussion / noise) is ignored.
+  function processChords(now) {
+    state.analyser.getFloatTimeDomainData(timeBuf);
+    if (!freqBuf) freqBuf = new Float32Array(state.analyser.frequencyBinCount);
+    state.analyser.getFloatFrequencyData(freqBuf);
+
+    let rms = 0;
+    for (let i = 0; i < timeBuf.length; i++) rms += timeBuf[i] * timeBuf[i];
+    rms = Math.sqrt(rms / timeBuf.length);
+    els.levelMeter.style.width = Math.min(100, rms * 900) + "%";
+    state.smoothLevel += (Math.min(1, rms * 6) - state.smoothLevel) * 0.25;
+
+    const sens = els.sensitivity.value / 100;
+    const minRms = 0.02 - sens * 0.017;
+    const { chroma, strongest, flatness } = MusiPitch.chromagram(
+      freqBuf, state.audioCtx.sampleRate, state.analyser.fftSize
+    );
+
+    const active = new Set();
+    if (rms >= minRms && flatness < 0.5) {
+      let max = 0;
+      for (let pc = 0; pc < 12; pc++) max = Math.max(max, chroma[pc]);
+      if (max > 0) {
+        const ranked = [];
+        for (let pc = 0; pc < 12; pc++)
+          if (chroma[pc] >= max * (0.65 - sens * 0.25)) ranked.push([chroma[pc], pc]);
+        ranked.sort((a, b) => b[0] - a[0]);
+        for (const [, pc] of ranked.slice(0, 3)) active.add(pc);
+      }
+      if (active.size) {
+        const top = [...active][0];
+        const octv = strongest[top] ? freqToNote(strongest[top].freq).octave : 4;
+        const label = NOTE_NAMES[top] + octv;
+        els.curNote.textContent = label;
+        els.detectNote.textContent = label;
+        els.curFreq.textContent = strongest[top] ? strongest[top].freq.toFixed(1) + " Hz" : "— Hz";
+        updatePreview(top);
+        highlightLegend(top);
+      }
+    } else {
+      highlightLegend(-1);
+    }
+
+    // Debounced per-pitch-class segment tracking (~3 ticks on, ~5 ticks off)
+    for (let pc = 0; pc < 12; pc++) {
+      const present = active.has(pc);
+      state.pcOn[pc] = present ? state.pcOn[pc] + 1 : 0;
+      state.pcOff[pc] = present ? 0 : state.pcOff[pc] + 1;
+      const seg = state.chordSegs.get(pc);
+      if (seg) {
+        if (present) {
+          seg.level = Math.max(seg.level, rms);
+          if (now - seg.lastGrow > 700) {
+            seg.lastGrow = now;
+            seg.restamps = (seg.restamps || 0) + 1;
+            stampNote(seg, (now - seg.startedAt) / 1000);
+          }
+        } else if (state.pcOff[pc] >= 5) {
+          closeSegment(seg, now);
+          state.chordSegs.delete(pc);
+        }
+      } else if (present && state.pcOn[pc] >= 3) {
+        state.stampCount++;
+        const octv = strongest[pc] ? freqToNote(strongest[pc].freq).octave : 4;
+        state.chordSegs.set(pc, {
+          note: pc, octave: Math.max(2, Math.min(6, octv)),
+          startedAt: now, lastGrow: now, level: rms,
+        });
+      }
     }
   }
 
@@ -353,13 +476,42 @@
   }, 33);
 
   // ---------- Render loop (painting only) ----------
+  // With Motion FX on, the artwork breathes with the audio level, rotates
+  // slowly, and gets a soft bloom pass — the underlying art stays untouched.
   function frame() {
     requestAnimationFrame(frame);
     resizeCanvas();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.filter = "none";
     ctx.fillStyle = "#050509";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (scaffold) ctx.drawImage(scaffold, 0, 0);
-    ctx.drawImage(art, 0, 0);
+    if (state.fxOn) {
+      const cx = canvas.width / 2, cy = canvas.height / 2;
+      const rot = (performance.now() * 0.00002) % TAU; // one turn ≈ 5 minutes
+      const breath = 1 + state.smoothLevel * 0.03;
+      // Bloom without a per-frame blur convolution: downscale `art` into a
+      // small canvas (cheap blit), then draw it back upscaled — the resample
+      // itself supplies the soft glow, at a fraction of ctx.filter's cost.
+      const bctx = bloomSmall.getContext("2d");
+      bctx.clearRect(0, 0, bloomSmall.width, bloomSmall.height);
+      bctx.drawImage(art, 0, 0, bloomSmall.width, bloomSmall.height);
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(rot);
+      ctx.scale(breath, breath);
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(bloomSmall, -cx, -cy, canvas.width, canvas.height);
+      ctx.globalAlpha = 1;
+      ctx.drawImage(art, -cx, -cy);
+      ctx.restore();
+      ctx.globalCompositeOperation = "source-over";
+    } else {
+      ctx.drawImage(art, 0, 0);
+    }
   }
   requestAnimationFrame(frame);
 
@@ -369,12 +521,30 @@
     if (state.audioCtx.state === "suspended") state.audioCtx.resume();
     if (!state.analyser) {
       state.analyser = state.audioCtx.createAnalyser();
-      state.analyser.fftSize = 2048;
+      // Large FFT gives the chromagram enough frequency resolution; melody
+      // mode still reads only the first 2048 time-domain samples.
+      state.analyser.fftSize = 8192;
     }
     return state.audioCtx;
   }
 
   function stopInput() {
+    const now = performance.now();
+    // Flush in-flight segments so they're drawn and recorded before teardown
+    if (state.mode !== "idle" && state.mode !== "replay") {
+      if (state.current) { closeSegment(state.current, now); state.current = null; }
+      for (const seg of state.chordSegs.values()) closeSegment(seg, now);
+      state.chordSegs.clear();
+      if (state.perf.length) {
+        const last = state.perf[state.perf.length - 1];
+        state.perfOffset = last.t + last.d + 800; // gap before the next session
+      }
+    }
+    if (replayTimer) {
+      clearInterval(replayTimer);
+      replayTimer = null;
+      els.btnReplay.textContent = "⟲ Replay";
+    }
     if (state.micStream) { state.micStream.getTracks().forEach((t) => t.stop()); state.micStream = null; }
     if (state.sourceNode) { try { state.sourceNode.disconnect(); } catch (e) {} state.sourceNode = null; }
     if (state.demoTimer) { clearTimeout(state.demoTimer); state.demoTimer = null; }
@@ -384,6 +554,7 @@
     setLive(false);
     els.btnMic.textContent = "● Start Mic";
     els.btnMic.classList.remove("recording");
+    els.btnDemo.textContent = "▶ Demo Melody";
   }
 
   function setLive(on, label) {
@@ -489,13 +660,18 @@
     els.btnPause.textContent = state.paused ? "▶ Resume" : "⏸ Pause";
   });
 
-  els.btnClear.addEventListener("click", () => {
+  function clearArt() {
     art.getContext("2d").clearRect(0, 0, art.width, art.height);
     state.stampCount = 0;
     state.noteCounts = {};
     state.history = [];
     els.noteHistory.innerHTML = "";
     els.canvasEmpty.classList.remove("hidden");
+  }
+  els.btnClear.addEventListener("click", () => {
+    clearArt();
+    state.perf = [];
+    state.perfOffset = 0;
   });
 
   els.btnSave.addEventListener("click", () => {
@@ -522,4 +698,253 @@
   bindSliderLabel(els.detail, els.detailVal, "%");
 
   els.colorMode.addEventListener("change", () => { lastPreviewNote = -1; });
+
+  // ---------- Replay ----------
+  // A performance is just its note events; replaying clears the canvas and
+  // re-runs them through the exact same stamping code, reproducing the
+  // artwork stroke by stroke (with the current style settings).
+  let replayTimer = null;
+
+  function buildTimeline(events) {
+    const items = [];
+    for (const ev of events) {
+      const seg = { note: ev.n, octave: ev.o, level: ev.l };
+      items.push({ at: ev.t, run: () => {
+        const label = NOTE_NAMES[ev.n] + ev.o;
+        els.curNote.textContent = label;
+        els.detectNote.textContent = label;
+        updatePreview(ev.n);
+        highlightLegend(ev.n);
+      } });
+      const holds = Math.floor(ev.d / 700);
+      for (let i = 1; i <= holds; i++) {
+        const hold = i;
+        items.push({ at: ev.t + hold * 700, run: () => {
+          seg.restamps = hold;
+          stampNote(seg, (hold * 700) / 1000);
+        } });
+      }
+      items.push({ at: ev.t + ev.d, run: () => { stampNote(seg, ev.d / 1000); } });
+    }
+    items.sort((a, b) => a.at - b.at);
+    return items;
+  }
+
+  function startReplay(events, onDone) {
+    if (!events || !events.length) {
+      alert("Nothing to replay yet — play or load a performance first.");
+      return;
+    }
+    stopInput();
+    clearArt();
+    state.mode = "replay";
+    state.startTime = performance.now();
+    setLive(true, "REPLAY");
+    els.btnReplay.textContent = "■ Stop Replay";
+    const items = buildTimeline(events);
+    let idx = 0;
+    const t0 = performance.now();
+    replayTimer = setInterval(() => {
+      const elapsed = performance.now() - t0;
+      while (idx < items.length && items[idx].at <= elapsed) items[idx++].run();
+      if (idx >= items.length) {
+        clearInterval(replayTimer);
+        replayTimer = null;
+        state.mode = "idle";
+        setLive(false);
+        els.btnReplay.textContent = "⟲ Replay";
+        highlightLegend(-1);
+        if (onDone) onDone();
+      }
+    }, 30);
+  }
+
+  els.btnReplay.addEventListener("click", () => {
+    if (replayTimer) { stopInput(); return; }
+    startReplay(state.perf.slice());
+  });
+
+  // ---------- Share links ----------
+  // The whole performance is compressed into the URL hash — no server, the
+  // link itself is the artwork.
+  function b64url(bytes) {
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000)
+      s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function unb64url(str) {
+    const b = atob(str.replace(/-/g, "+").replace(/_/g, "/"));
+    const u = new Uint8Array(b.length);
+    for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+    return u;
+  }
+
+  async function encodePerf(events) {
+    const bytes = new TextEncoder().encode(
+      JSON.stringify(events.map((e) => [e.t, e.n, e.o, e.d, Math.round(e.l * 1000)]))
+    );
+    if (window.CompressionStream) {
+      const cs = new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+      return "d" + b64url(new Uint8Array(await new Response(cs).arrayBuffer()));
+    }
+    return "j" + b64url(bytes);
+  }
+
+  async function decodePerf(s) {
+    const bytes = unb64url(s.slice(1));
+    let json;
+    if (s[0] === "d") {
+      const ds = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      json = await new Response(ds).text();
+    } else {
+      json = new TextDecoder().decode(bytes);
+    }
+    return JSON.parse(json).map((a) => ({ t: a[0], n: a[1], o: a[2], d: a[3], l: a[4] / 1000 }));
+  }
+
+  els.btnShare.addEventListener("click", async () => {
+    if (!state.perf.length) { alert("Play something first — then share it."); return; }
+    const url = location.origin + location.pathname + "#p=" + (await encodePerf(state.perf));
+    try {
+      await navigator.clipboard.writeText(url);
+      els.btnShare.textContent = "✓ Copied!";
+    } catch (e) {
+      window.prompt("Copy your share link:", url);
+    }
+    setTimeout(() => (els.btnShare.textContent = "🔗 Share Link"), 1800);
+  });
+
+  // Opening a share link redraws the performance automatically
+  if (location.hash.startsWith("#p=")) {
+    decodePerf(location.hash.slice(3))
+      .then((events) => {
+        state.perf = events;
+        setTimeout(() => startReplay(events), 600);
+      })
+      .catch(() => {});
+  }
+
+  // ---------- Exports ----------
+  // Exports re-render the recorded performance from scratch into the target
+  // (fresh variant counters), so output is deterministic at any resolution.
+  function renderPerfTo(target, events) {
+    for (const ev of events) {
+      const seg = { note: ev.n, octave: ev.o, level: ev.l };
+      const holds = Math.floor(ev.d / 700);
+      for (let i = 1; i <= holds; i++) {
+        seg.restamps = i;
+        stampNote(seg, (i * 700) / 1000, target);
+      }
+      stampNote(seg, ev.d / 1000, target);
+    }
+  }
+
+  // One cheap downscale-then-upscale bloom pass, standing in for the
+  // per-shape shadowBlur glow (too slow) and for ctx.filter blur (a full-res
+  // convolution — measured 30+s at 4K) across a whole bulk render.
+  function applyBloom(ctx, w, h) {
+    const sw = Math.max(48, Math.round(w / 8)), sh = Math.max(48, Math.round(h / 8));
+    const small = document.createElement("canvas");
+    small.width = sw; small.height = sh;
+    small.getContext("2d").drawImage(ctx.canvas, 0, 0, sw, sh);
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = 0.55;
+    ctx.drawImage(small, 0, 0, w, h);
+    ctx.restore();
+  }
+
+  function downloadBlob(blob, name) {
+    const link = document.createElement("a");
+    link.download = name;
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+  }
+
+  els.btnSvg.addEventListener("click", () => {
+    if (!state.perf.length) { alert("Play something first."); return; }
+    const svgCtx = new SVGContext(art.width, art.height);
+    renderPerfTo(
+      { ctx: svgCtx, w: art.width, h: art.height, dpr: window.devicePixelRatio || 1, counters: {} },
+      state.perf
+    );
+    downloadBlob(new Blob([svgCtx.toSVG("#050509")], { type: "image/svg+xml" }), "musicanvas-artwork.svg");
+  });
+
+  els.btnHiRes.addEventListener("click", () => {
+    if (!state.perf.length) { alert("Play something first."); return; }
+    if (els.btnHiRes.disabled) return;
+    els.btnHiRes.disabled = true;
+    els.btnHiRes.textContent = "⬇ Rendering…";
+    // Deferred via setTimeout (not requestAnimationFrame) so the "Rendering…"
+    // label update flushes even in a backgrounded/hidden tab, where rAF never
+    // fires at all — the same pitfall the pitch-detection loop hit earlier.
+    setTimeout(() => {
+      // `art` is already devicePixelRatio-scaled physical pixels, so `k` alone
+      // (not re-multiplied by dpr) is the correct scale. Target the short edge
+      // at 2400px rather than a full 4096: PNG-encoding a ~20MP RGBA canvas
+      // measured minutes on constrained hardware, vs. seconds at this size,
+      // while still comfortably exceeding the on-screen canvas resolution.
+      const k = 2400 / Math.min(art.width, art.height);
+      const w = Math.round(art.width * k), h = Math.round(art.height * k);
+      const big = document.createElement("canvas");
+      big.width = w; big.height = h;
+      const bctx = big.getContext("2d");
+      bctx.fillStyle = "#050509";
+      bctx.fillRect(0, 0, w, h);
+      bctx.drawImage(buildScaffoldCanvas(w, h), 0, 0);
+      // glow:false — per-shape shadowBlur at this resolution would take far
+      // too long; a single bloom pass afterward gives the same look cheaply.
+      renderPerfTo({ ctx: bctx, w, h, dpr: k, counters: {}, glow: false }, state.perf);
+      applyBloom(bctx, w, h);
+      big.toBlob((blob) => {
+        downloadBlob(blob, "musicanvas-hires.png");
+        els.btnHiRes.textContent = "⬇ Hi-Res";
+        els.btnHiRes.disabled = false;
+      }, "image/png");
+    }, 20);
+  });
+
+  els.btnVideo.addEventListener("click", () => {
+    if (!state.perf.length) { alert("Play something first."); return; }
+    if (state.recorder) return;
+    const stream = canvas.captureStream(30);
+    const rec = new MediaRecorder(stream, { mimeType: "video/webm" });
+    const chunks = [];
+    rec.ondataavailable = (e) => chunks.push(e.data);
+    rec.onstop = () => {
+      downloadBlob(new Blob(chunks, { type: "video/webm" }), "musicanvas-timelapse.webm");
+      state.recorder = null;
+      els.btnVideo.textContent = "⏺ Record Timelapse Video";
+    };
+    state.recorder = rec;
+    rec.start();
+    els.btnVideo.textContent = "⏺ Recording…";
+    startReplay(state.perf.slice(), () => setTimeout(() => rec.stop(), 600));
+  });
+
+  // ---------- Performance mode ----------
+  els.btnFx.classList.add("on");
+  els.btnFx.addEventListener("click", () => {
+    state.fxOn = !state.fxOn;
+    els.btnFx.classList.toggle("on", state.fxOn);
+  });
+
+  els.btnFull.addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else canvas.parentElement.requestFullscreen();
+  });
+
+  // Debug / power-user hooks
+  window.MusiCanvas = {
+    getPerf: () => state.perf.slice(),
+    encodePerf, decodePerf, startReplay,
+    buildSVG: () => {
+      const s = new SVGContext(art.width, art.height);
+      renderPerfTo({ ctx: s, w: art.width, h: art.height, dpr: 1, counters: {} }, state.perf);
+      return s.toSVG("#050509");
+    },
+  };
 })();

@@ -45,7 +45,11 @@
     <div class="stage-header">
       <div class="live-pill" id="livePill"><span class="live-dot"></span><span id="liveLabel">IDLE</span></div>
       <div class="stage-title">Live Drawing from Music</div>
-      <div class="timer" id="timer">00:00</div>
+      <div class="stage-actions">
+        <div class="timer" id="timer">00:00</div>
+        <button class="icon-btn" id="btnFx" title="Motion FX (breathing, rotation, bloom)">🎇</button>
+        <button class="icon-btn" id="btnFull" title="Fullscreen">⛶</button>
+      </div>
     </div>
     <div class="canvas-wrap" id="canvasWrap">
       <canvas id="artCanvas"></canvas>
@@ -83,6 +87,13 @@
     </div>
     <label class="file-btn btn" for="fileInput">♫ Play Audio File…</label>
     <input type="file" id="fileInput" accept="audio/*" hidden>
+    <div class="control detection-ctl">
+      <label>Detection</label>
+      <select id="detection">
+        <option value="melody">Melody — voice / single instrument</option>
+        <option value="music">Music — chords / full songs</option>
+      </select>
+    </div>
 
     <h2 class="section-title">2. Detected</h2>
     <div class="detect-card">
@@ -126,7 +137,18 @@
       <button class="btn" id="btnPause">⏸ Pause</button>
       <button class="btn" id="btnClear">⟳ Clear</button>
     </div>
-    <button class="btn btn-save" id="btnSave">⬇ Save Artwork (PNG)</button>
+
+    <h2 class="section-title">4. Share &amp; Export</h2>
+    <div class="btn-row">
+      <button class="btn" id="btnReplay">⟲ Replay</button>
+      <button class="btn" id="btnShare">🔗 Share Link</button>
+    </div>
+    <div class="btn-row export-row">
+      <button class="btn" id="btnSave">⬇ PNG</button>
+      <button class="btn" id="btnSvg">⬇ SVG</button>
+      <button class="btn" id="btnHiRes">⬇ Hi-Res</button>
+    </div>
+    <button class="btn btn-save" id="btnVideo">⏺ Record Timelapse Video</button>
 
     <div class="how-it-works">
       <h2 class="section-title">How it works</h2>
@@ -139,6 +161,7 @@
 
 <script src="patterns.js"></script>
 <script src="pitch.js"></script>
+<script src="svgctx.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
